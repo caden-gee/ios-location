@@ -127,6 +127,8 @@ struct MapHomeView: View {
     @State private var lastKnownUserCoord: CLLocationCoordinate2D? = nil
     @State private var realUserCoord: CLLocationCoordinate2D? = nil
 
+    @State private var locationSheetHeight: CGFloat = 220
+
     var body: some View {
         ZStack {
             // 全屏地图
@@ -140,6 +142,10 @@ struct MapHomeView: View {
                 }
                 .mapStyle(.standard(pointsOfInterest: .all))
                 .mapFeatureSelectionAccessory(.automatic)
+                .mapControls {
+                    MapCompass()
+                    MapScaleView()
+                }
                 .ignoresSafeArea()
                 .onTapGesture(coordinateSpace: .global) { tapLocation in
                     // 空白点击才取坐标(POI 内置选中由 selection 绑定处理)
@@ -158,25 +164,24 @@ struct MapHomeView: View {
                 HStack {
                     Spacer()
                     if let userCoord = lastKnownUserCoord {
-                        Button(action: {
+                        Button {
                             withAnimation {
                                 cameraPosition = .region(MKCoordinateRegion(
                                     center: userCoord,
                                     span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
                                 ))
                             }
-                        }) {
+                        } label: {
                             Image(systemName: "location.fill")
                                 .font(.title3)
-                                .foregroundColor(.blue)
-                                .padding(12)
-                                .background(.regularMaterial)
-                                .clipShape(Circle())
-                                .shadow(radius: 3)
+                                .frame(width: 44, height: 44)
+                                .background(.regularMaterial, in: Circle())
+                                .shadow(color: .black.opacity(0.15), radius: 3, y: 1)
                         }
+                        .accessibilityLabel(isSpoofActive ? "Show spoofed location" : "Show my location")
                     }
                 }
-                .padding(.trailing, 12)
+                .padding(.trailing, 16)
                 .padding(.bottom, 8)
 
                 bottomCard
@@ -184,27 +189,36 @@ struct MapHomeView: View {
         }
         .sheet(isPresented: $showLocationSheet) {
             locationSheet
-                .presentationDetents([.height(220)])
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { locationSheetHeight = $0 }
+                .presentationDetents([.height(locationSheetHeight)])
+                .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showRestartLocationGuide) {
             restartLocationGuide
+                // Dismissing by swipe would skip the Done handler and strand the state in .pending.
+                .interactiveDismissDisabled()
         }
-        .alert("Disable Spoofing", isPresented: $showDisableGuide) {
+        .alert("Turn Off Spoofing?", isPresented: $showDisableGuide) {
             Button("Cancel", role: .cancel) { }
-            Button("Disable", role: .destructive) {
+            Button("Turn Off", role: .destructive) {
                 disableSpoofing()
             }
         } message: {
-            Text("Spoofing will be disabled. After disabling, restart Location Services once for your real location to return.")
+            Text("After turning off, restart Location Services once to get your real location back.")
         }
         .sheet(isPresented: $showRestartPhoneGuide) {
             disableRestartGuide
+                .interactiveDismissDisabled()
         }
         .sheet(isPresented: $showFavoritesSheet) {
             favoritesSheet
+                .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NEVPNStatusDidChange)) { _ in
+            refreshVPNStatus()
         }
         .onAppear {
             refreshVPNStatus()
@@ -224,23 +238,18 @@ struct MapHomeView: View {
             locationFetcher.requestOneShot()
             // 根据当前数据恢复 spoofingState
             let savedName = UserDefaults.standard.string(forKey: "currentLocationName") ?? ""
-            if !savedName.isEmpty && vpnConnected {
-                spoofingState = .on(name: savedName)
-            } else if !savedName.isEmpty && !vpnConnected {
-                spoofingState = .off
-            } else {
-                spoofingState = .off
-            }
-            NotificationCenter.default.addObserver(forName: .NEVPNStatusDidChange, object: nil, queue: .main) { _ in
-                refreshVPNStatus()
-            }
+            spoofingState = (!savedName.isEmpty && vpnConnected) ? .on(name: savedName) : .off
         }
     }
+
+    private var isSpoofActive: Bool {
+        if case .on = spoofingState { return true }
+        return false
+    }
+
     // MARK: - 子视图
 
-
     // 底部卡片:搜索栏 + 输入联想 + 状态信息 + 主操作。
-    // 顶圆角 + .regularMaterial 背景 + 阴影,底部贴屏幕边(ignoresSafeArea bottom)。
     private var bottomCard: some View {
         VStack(spacing: 12) {
             searchBar
@@ -250,7 +259,7 @@ struct MapHomeView: View {
             statusSection
         }
         .padding(.top, 16)
-        .padding(.bottom, 8)
+        .padding(.bottom, 12)
         .background {
             UnevenRoundedRectangle(topLeadingRadius: 20, topTrailingRadius: 20)
                 .fill(.regularMaterial)
@@ -259,288 +268,254 @@ struct MapHomeView: View {
         }
     }
 
-    // 搜索联想列表(原本在 body,移到 bottomCard 内)
+    // 搜索联想列表
     private var suggestionsList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(searchCompleter.results.prefix(5), id: \.self) { completion in
+            ForEach(Array(searchCompleter.results.prefix(5).enumerated()), id: \.element) { index, completion in
+                if index > 0 { Divider().padding(.leading, 44) }
                 Button(action: { selectCompletion(completion) }) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(completion.title)
-                            .font(.body)
-                            .foregroundColor(.primary)
-                        if !completion.subtitle.isEmpty {
-                            Text(completion.subtitle)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                    HStack(spacing: 12) {
+                        Image(systemName: "mappin.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.red)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(completion.title)
+                                .foregroundStyle(.primary)
+                            if !completion.subtitle.isEmpty {
+                                Text(completion.subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        Spacer(minLength: 0)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, 12)
                     .padding(.vertical, 10)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                Divider().padding(.leading, 14)
             }
         }
-        .background(Color(UIColor.systemBackground).opacity(0.4))
-        .cornerRadius(12)
-        .padding(.horizontal, 12)
-    }
-
-    // 状态信息(圆点+文案)+ 主操作(.on 关闭定位 / .failed 重试)
-    private var statusSection: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(indicatorColor)
-                    .frame(width: 10, height: 10)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(statusPrimaryText)
-                        .font(.body)
-                        .fontWeight(.semibold)
-                    if let sub = statusSubText {
-                        Text(sub)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                Spacer()
-            }
-
-            if case .on = spoofingState {
-                Button(action: { showDisableGuide = true }) {
-                    Text("Disable")
-                        .font(.body)
-                        .fontWeight(.semibold)
-                        .frame(maxWidth: .infinity)
-                        .padding(14)
-                        .background(Color.red)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                }
-            } else if case .failed = spoofingState {
-                Button(action: { spoofingState = .off }) {
-                    Text("Retry")
-                        .font(.body)
-                        .fontWeight(.semibold)
-                        .frame(maxWidth: .infinity)
-                        .padding(14)
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                }
-            }
-        }
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal, 16)
     }
 
-    // 状态文案(MapHomeView 内重写,不动 SpoofingState.swift)
-    private var statusPrimaryText: String {
-        switch spoofingState {
-        case .off: return "Select a location to start spoofing"
-        case .pending(_, let isClosing): return isClosing ? "Disabling…" : "Activating…"
-        case .on(let name): return "Active: \(name)"
-        case .failed(let reason): return "Failed: \(reason)"
-        }
-    }
+    // 状态信息(图标+文案)+ 主操作(.on 关闭定位 / .failed 重试)
+    private var statusSection: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: spoofingState.symbolName)
+                    .font(.title3)
+                    .foregroundStyle(spoofingState.tint)
+                    .frame(width: 28)
+                    .contentTransition(.symbolEffect(.replace))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(spoofingState.primaryText)
+                        .font(.headline)
+                        .lineLimit(2)
+                    if let sub = spoofingState.subText {
+                        Text(sub)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .combine)
 
-    private var statusSubText: String? {
-        if case .pending = spoofingState { return "Please restart Location Services" }
-        return nil
-    }
-    private var indicatorColor: Color {
-        switch spoofingState {
-        case .off:      return .gray
-        case .pending:  return .yellow
-        case .on:       return .blue
-        case .failed:   return .red
+            if case .on = spoofingState {
+                Button(role: .destructive) { showDisableGuide = true } label: {
+                    Text("Turn Off Spoofing").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+            } else if case .failed = spoofingState {
+                Button { spoofingState = .off } label: {
+                    Text("Dismiss").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+            }
         }
+        .padding(.horizontal, 16)
+        .animation(.default, value: spoofingState)
     }
-
 
     private var searchBar: some View {
         HStack(spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
-                    .foregroundColor(.secondary)
-                TextField("Search a place or tap the map", text: $searchText)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                TextField("Search for a place", text: $searchText)
                     .textFieldStyle(.plain)
                     .submitLabel(.search)
+                    .autocorrectionDisabled()
                     .onSubmit { performSearch() }
                     .onChange(of: searchText) { _, new in searchCompleter.updateQuery(new) }
                 if !searchText.isEmpty {
-                    Button(action: { searchText = "" }) {
+                    Button { searchText = "" } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(.secondary)
                     }
+                    .accessibilityLabel("Clear search")
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(.regularMaterial)
-            .cornerRadius(12)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 44)
+            .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12))
 
-            Button(action: { showFavoritesSheet = true }) {
-                Image(systemName: "star.fill")
-                    .font(.title3)
-                    .foregroundColor(.yellow)
-                    .padding(12)
-                    .background(.regularMaterial)
-                    .clipShape(Circle())
+            circleToolbarButton(systemImage: "star", label: "Saved locations") {
+                showFavoritesSheet = true
             }
-            Button(action: { showSettings = true }) {
-                Image(systemName: "gearshape.fill")
-                    .font(.title3)
-                    .foregroundColor(.primary)
-                    .padding(12)
-                    .background(.regularMaterial)
-                    .clipShape(Circle())
+            circleToolbarButton(systemImage: "gearshape", label: "Settings") {
+                showSettings = true
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 24)
+        .padding(.horizontal, 16)
+    }
+
+    private func circleToolbarButton(systemImage: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.title3)
+                .frame(width: 44, height: 44)
+                .background(Color(uiColor: .tertiarySystemFill), in: Circle())
+        }
+        .accessibilityLabel(label)
     }
 
     private var locationSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "mappin.circle.fill")
-                    .foregroundColor(.red)
-                    .font(.title2)
+                    .font(.largeTitle)
+                    .foregroundStyle(.red)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(selectedLocationName ?? "Unknown location")
-                        .font(.headline)
+                    if let name = selectedLocationName {
+                        Text(name)
+                            .font(.headline)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("Looking up address…")
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                    }
                     if let coord = selectedCoordinate {
-                        Text(String(format: "%.4f, %.4f", coord.latitude, coord.longitude))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        Text(String(format: "%.5f, %.5f", coord.latitude, coord.longitude))
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
                     }
                 }
-                Spacer()
+                Spacer(minLength: 0)
             }
-
-            Spacer()
 
             HStack(spacing: 12) {
                 Button(action: { addCurrentSelectionToFavorites() }) {
-                    HStack {
-                        Image(systemName: justFavorited ? "checkmark.circle.fill" : "star")
-                        Text(justFavorited ? "Saved" : "Save")
-                            .fontWeight(justFavorited ? .semibold : .regular)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(justFavorited ? Color.green.opacity(0.15) : Color(UIColor.tertiarySystemBackground))
-                    .foregroundColor(justFavorited ? Color.green : Color.primary)
-                    .cornerRadius(12)
-                    .animation(.easeInOut(duration: 0.2), value: justFavorited)
-                }
-                .disabled(justFavorited)
-                Button(action: { setAsLocation() }) {
-                    Text(isSpoofing ? "Activating…" : "Set Location")
-                        .fontWeight(.semibold)
+                    Label(justFavorited ? "Saved" : "Save",
+                          systemImage: justFavorited ? "checkmark" : "star")
                         .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(isSpoofing ? Color.gray : Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
+                        .contentTransition(.symbolEffect(.replace))
                 }
-                .disabled(isSpoofing)
+                .buttonStyle(.bordered)
+                .tint(justFavorited ? .green : .accentColor)
+                .disabled(justFavorited || selectedLocationName == nil)
+                .sensoryFeedback(.success, trigger: justFavorited) { _, new in new }
+
+                PrimaryButton(title: isSpoofing ? "Activating…" : "Use This Location", isBusy: isSpoofing) {
+                    setAsLocation()
+                }
+                .layoutPriority(1)
             }
+            .controlSize(.large)
         }
-        .padding()
+        .padding(20)
+        .padding(.top, 8)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private static let restartLocationSteps = [
+        "Open the Settings app",
+        "Tap Privacy & Security",
+        "Tap Location Services",
+        "Turn Location Services off",
+        "Wait about 3 seconds",
+        "Turn Location Services back on",
+    ]
+
+    private func restartGuide(title: String, subtitle: String, onDone: @escaping () -> Void) -> some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Text(subtitle)
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                    NumberedSteps(steps: Self.restartLocationSteps, emphasized: [4])
+                }
+                .padding(24)
+            }
+            .safeAreaInset(edge: .bottom) {
+                PrimaryButton(title: "Done", action: onDone)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 8)
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.large)
+        }
     }
 
     private var restartLocationGuide: some View {
-        VStack(spacing: 20) {
-            Text("Final step")
-                .font(.title2).fontWeight(.bold)
-            Text("Turn Location Services off and back on")
-                .font(.title3)
-            VStack(alignment: .leading, spacing: 12) {
-                Text("① Open iPhone Settings").font(.body)
-                Text("② Tap Privacy & Security").font(.body)
-                Text("③ Tap Location Services").font(.body)
-                Text("④ Turn off Location Services").font(.body)
-                Text("⑤ Wait 3 seconds").font(.body).foregroundColor(.red)
-                Text("⑥ Turn Location Services back on").font(.body)
-            }
-            .padding()
-            Spacer()
-            Button("Done") {
-                showRestartLocationGuide = false
-                // pending → on
-                let name = UserDefaults.standard.string(forKey: "currentLocationName") ?? ""
-                DiagLog.add("User tapped [Done]: name=\(name), state→on, will stop VPN")
-                if !name.isEmpty {
-                    spoofingState = .on(name: name)
-                    // 镜头移到伪装位置,用户直观看到"已生效"
-                    if let target = spoofedDisplayCoord {
-                        lastKnownUserCoord = target  // 让"回到我的位置"按钮跳到伪装坐标
-                        withAnimation {
-                            cameraPosition = .region(MKCoordinateRegion(
-                                center: target,
-                                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-                            ))
-                        }
+        restartGuide(
+            title: "One Last Step",
+            subtitle: "Restart Location Services so iOS picks up the new location."
+        ) {
+            showRestartLocationGuide = false
+            // pending → on
+            let name = UserDefaults.standard.string(forKey: "currentLocationName") ?? ""
+            DiagLog.add("User tapped [Done]: name=\(name), state→on, will stop VPN")
+            if !name.isEmpty {
+                spoofingState = .on(name: name)
+                // 镜头移到伪装位置,用户直观看到"已生效"
+                if let target = spoofedDisplayCoord {
+                    lastKnownUserCoord = target  // 让"回到我的位置"按钮跳到伪装坐标
+                    withAnimation {
+                        cameraPosition = .region(MKCoordinateRegion(
+                            center: target,
+                            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                        ))
                     }
                 }
-                // 定位已进系统缓存焊死,关 VPN 恢复全手机网络;伪装位置由 iOS 缓存维持,不受影响。
-                // 状态卡 .on 独立于 vpnConnected(全局观察者只刷 vpnStatus/vpnConnected,不重置 spoofingState)。
-                ContentView.vpnManager?.connection.stopVPNTunnel()
             }
-            .font(.headline)
-            .frame(maxWidth: .infinity)
-            .padding()
-            .background(Color.blue)
-            .foregroundColor(.white)
-            .cornerRadius(12)
+            // 定位已进系统缓存焊死,关 VPN 恢复全手机网络;伪装位置由 iOS 缓存维持,不受影响。
+            // 状态卡 .on 独立于 vpnConnected(全局观察者只刷 vpnStatus/vpnConnected,不重置 spoofingState)。
+            ContentView.vpnManager?.connection.stopVPNTunnel()
         }
-        .padding(24)
     }
 
     private var disableRestartGuide: some View {
-        VStack(spacing: 20) {
-            Text("Spoofing disabled")
-                .font(.title2).fontWeight(.bold)
-            Text("Final step: restart Location Services for your real location to return")
-                .font(.title3)
-                .foregroundColor(.secondary)
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Follow these steps:")
-                    .font(.body)
-                Text("① Open iPhone Settings").font(.body)
-                Text("② Tap Privacy & Security").font(.body)
-                Text("③ Tap Location Services").font(.body)
-                Text("④ Turn off Location Services").font(.body)
-                Text("⑤ Wait 3 seconds").font(.body).foregroundColor(.red)
-                Text("⑥ Turn Location Services back on").font(.body)
-            }
-            .padding()
-            Spacer()
-            Button("Done") {
-                showRestartPhoneGuide = false
-                spoofingState = .off
-            }
-            .font(.headline)
-            .frame(maxWidth: .infinity)
-            .padding()
-            .background(Color.green)
-            .foregroundColor(.white)
-            .cornerRadius(12)
+        restartGuide(
+            title: "Spoofing Turned Off",
+            subtitle: "Restart Location Services to get your real location back."
+        ) {
+            showRestartPhoneGuide = false
+            spoofingState = .off
         }
-        .padding(24)
     }
 
     private var favoritesSheet: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 // 最近使用
                 if !recentLocations.isEmpty {
                     Section("Recent") {
                         ForEach(recentLocations) { saved in
                             Button(action: { selectFavorite(saved) }) {
-                                favoriteRow(saved: saved, iconName: "clock", iconColor: .orange)
+                                favoriteRow(saved: saved, iconName: "clock.fill", iconColor: .gray)
                             }
                         }
                     }
@@ -549,12 +524,15 @@ struct MapHomeView: View {
                 // 我的收藏
                 Section("Favorites") {
                     if savedLocations.isEmpty {
-                        Text("No saved locations yet")
-                            .foregroundColor(.secondary)
+                        ContentUnavailableView(
+                            "No Favorites Yet",
+                            systemImage: "star",
+                            description: Text("Tap Save on a location to keep it here.")
+                        )
                     } else {
                         ForEach(savedLocations) { saved in
                             Button(action: { selectFavorite(saved) }) {
-                                favoriteRow(saved: saved, iconName: "star.fill", iconColor: .yellow)
+                                favoriteRow(saved: saved, iconName: "star.fill", iconColor: .orange)
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button(role: .destructive) {
@@ -570,7 +548,7 @@ struct MapHomeView: View {
             .navigationTitle("Saved Locations")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { showFavoritesSheet = false }
                 }
             }
@@ -579,18 +557,21 @@ struct MapHomeView: View {
 
     @ViewBuilder
     private func favoriteRow(saved: SavedLocation, iconName: String, iconColor: Color) -> some View {
-        HStack {
+        HStack(spacing: 12) {
             Image(systemName: iconName)
-                .foregroundColor(iconColor)
-            VStack(alignment: .leading) {
+                .foregroundStyle(iconColor)
+                .frame(width: 24)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
                 Text(saved.name)
-                    .foregroundColor(.primary)
+                    .foregroundStyle(.primary)
                 Text(String(format: "%.4f, %.4f", saved.latitude, saved.longitude))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
+        .contentShape(Rectangle())
     }
 
     // MARK: - 动作
@@ -1166,10 +1147,7 @@ struct MapHomeView: View {
     }
 
     private func triggerFavoritedFeedback() {
-        // 触感反馈
-        let generator = UIImpactFeedbackGenerator(style: .light)
-        generator.impactOccurred()
-        // 视觉反馈
+        // 视觉反馈(触感由 locationSheet 的 .sensoryFeedback 触发)
         justFavorited = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             justFavorited = false
