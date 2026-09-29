@@ -1,166 +1,240 @@
 package main
 
 import (
-	"encoding/hex"
+	"bytes"
+	"encoding/binary"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	pb "golocationspoofer/pb"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 )
 
-func TestDeserializeRealRequest(t *testing.T) {
-	requestBytes, _ := hex.DecodeString("0001000a656e2d3030315f3030310013636f6d2e6170706c652e6c6f636174696f6e64000a32362e322e3233433535000000020000000002000000")
+func i64(v int64) *int64   { return &v }
+func i32(v int32) *int32   { return &v }
+func str(v string) *string { return &v }
 
-	arpc := ArpcDeserialize(requestBytes)
-	if arpc == nil {
-		t.Fatal("Failed to deserialize ARPC")
-	}
-
-	t.Logf("ARPC payload size: %d bytes", len(arpc.Payload))
-	t.Logf("Version: %s", arpc.Version)
-	t.Logf("Locale: %s", arpc.Locale)
-	t.Logf("AppIdentifier: %s", arpc.AppIdentifier)
-	t.Logf("OsVersion: %s", arpc.OsVersion)
-	t.Logf("FunctionId: %d", arpc.FunctionId)
-
-	wloc := &pb.AppleWLoc{}
-	if err := proto.Unmarshal(arpc.Payload, wloc); err != nil {
-		t.Fatalf("Failed to unmarshal protobuf: %v", err)
-	}
-
-	t.Logf("Number of wifi devices: %d", len(wloc.WifiDevices))
-
-	if len(wloc.WifiDevices) == 0 {
-		t.Logf("WifiDevices slice is empty or nil")
-	} else {
-		for i, device := range wloc.WifiDevices {
-			t.Logf("Device %d: BSSID=%s", i, device.GetBssid())
-		}
+// sampleWLoc mimics what locationd sends: BSSIDs, mostly without locations,
+// plus request metadata that must survive the rewrite.
+func sampleWLoc() *pb.AppleWLoc {
+	return &pb.AppleWLoc{
+		WifiDevices: []*pb.WifiDevice{
+			{Bssid: "aa:bb:cc:dd:ee:ff"},
+			{Bssid: "11:22:33:44:55:66", Location: &pb.Location{
+				Latitude:           i64(100),
+				Longitude:          i64(-200),
+				HorizontalAccuracy: i64(39),
+				Altitude:           i64(530),
+			}},
+		},
+		NumWifiResults: i32(-1),
+		AppBundleId:    str("com.apple.locationd"),
 	}
 }
 
-func TestFullRoundTrip(t *testing.T) {
-	requestBytes, _ := hex.DecodeString("0001000a656e2d3030315f3030310013636f6d2e6170706c652e6c6f636174696f6e64000a32362e322e3233433535000000020000000002000000")
-
-	arpc := ArpcDeserialize(requestBytes)
-	if arpc == nil {
-		t.Fatal("Failed to deserialize ARPC")
+func sampleArpc(t *testing.T, payload []byte) *ArpcRequest {
+	t.Helper()
+	return &ArpcRequest{
+		Version:       "1",
+		Locale:        "en-001_001",
+		AppIdentifier: "com.apple.locationd",
+		OsVersion:     "26.2.23C55",
+		FunctionId:    1,
+		Payload:       payload,
 	}
+}
 
-	wloc := &pb.AppleWLoc{}
-	if err := proto.Unmarshal(arpc.Payload, wloc); err != nil {
-		t.Fatalf("Failed to unmarshal protobuf: %v", err)
-	}
-
-	if len(wloc.WifiDevices) == 0 {
-		t.Fatal("No wifi devices found")
-	}
-
-	lat := IntFromCoord(51.510420)
-	lon := IntFromCoord(-3.218306)
-	horizontalAccuracy := int64(39)
-	verticalAccuracy := int64(1000)
-	altitude := int64(530)
-	unknownValue4 := int64(3)
-	motionActivityType := int64(63)
-	motionActivityConfidence := int64(467)
-
-	for i, device := range wloc.WifiDevices {
-		t.Logf("Spoofing BSSID: %s (index %d)", device.GetBssid(), i)
-		if device.Location == nil {
-			device.Location = &pb.Location{}
-		}
-		device.Location.Latitude = &lat
-		device.Location.Longitude = &lon
-		device.Location.HorizontalAccuracy = &horizontalAccuracy
-		device.Location.VerticalAccuracy = &verticalAccuracy
-		device.Location.Altitude = &altitude
-		device.Location.UnknownValue4 = &unknownValue4
-		device.Location.MotionActivityType = &motionActivityType
-		device.Location.MotionActivityConfidence = &motionActivityConfidence
-	}
-
-	wloc.NumCellResults = nil
-	wloc.NumWifiResults = nil
-	wloc.DeviceType = nil
-
-	initialBytes, _ := hex.DecodeString("0001000000010000")
-	responseBytes, err := SerializeProto(wloc, initialBytes)
+func TestArpcRoundTrip(t *testing.T) {
+	payload, err := proto.Marshal(sampleWLoc())
 	if err != nil {
-		t.Fatalf("Failed to serialize: %v", err)
+		t.Fatal(err)
 	}
+	want := sampleArpc(t, payload)
+	want.FunctionId = 0x01020304
 
-	t.Logf("Request had %d wifi devices", len(wloc.WifiDevices))
-	t.Logf("Response bytes: %x", responseBytes)
-	t.Logf("Response length: %d bytes", len(responseBytes))
-
-	if responseBytes[0] != 0x00 || responseBytes[1] != 0x01 {
-		t.Errorf("First 2 bytes should be 0x0001, got: %x", responseBytes[:2])
+	raw, err := ArpcSerialize(want)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	payloadLen := int(responseBytes[7])<<8 | int(responseBytes[8])
-	t.Logf("Embedded payload length: %d bytes", payloadLen)
-	t.Logf("Total response length: %d bytes", len(responseBytes))
-
-	if payloadLen != len(responseBytes)-9 {
-		t.Errorf("Payload length mismatch: embedded=%d, actual=%d", payloadLen, len(responseBytes)-9)
+	got, err := ArpcDeserialize(raw)
+	if err != nil {
+		t.Fatalf("ArpcDeserialize: %v", err)
+	}
+	if got.Version != want.Version || got.Locale != want.Locale ||
+		got.AppIdentifier != want.AppIdentifier || got.OsVersion != want.OsVersion ||
+		got.FunctionId != want.FunctionId || !bytes.Equal(got.Payload, want.Payload) {
+		t.Fatalf("round trip mismatch:\n got %+v\nwant %+v", got, want)
 	}
 }
 
-func TestCoordinateEncoding(t *testing.T) {
-	lat := IntFromCoord(51.510420)
-	lon := IntFromCoord(-3.218306)
-
-	t.Logf("Lat 51.510420 -> %d", lat)
-	t.Logf("Lon -3.218306 -> %d", lon)
-
-	latZigzag := encodeZigzag(lat)
-	lonZigzag := encodeZigzag(lon)
-
-	t.Logf("Lat zigzag: %d (0x%x)", latZigzag, latZigzag)
-	t.Logf("Lon zigzag: %d (0x%x)", lonZigzag, lonZigzag)
-
-	latVarint := appendVarint(make([]byte, 0), latZigzag)
-	lonVarint := appendVarint(make([]byte, 0), lonZigzag)
-
-	t.Logf("Lat varint hex: %s", hex.EncodeToString(latVarint))
-	t.Logf("Lon varint hex: %s", hex.EncodeToString(lonVarint))
+func TestArpcDeserializeRejectsTruncatedInput(t *testing.T) {
+	raw, err := ArpcSerialize(sampleArpc(t, []byte{1, 2, 3, 4, 5}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for n := 0; n < len(raw); n++ {
+		if _, err := ArpcDeserialize(raw[:n]); err == nil {
+			t.Errorf("ArpcDeserialize accepted %d/%d bytes", n, len(raw))
+		}
+	}
 }
 
-func TestFieldPresence(t *testing.T) {
-	wloc := &pb.AppleWLoc{
-		WifiDevices: []*pb.WifiDevice{
-			{
-				Bssid: "aa:bb:cc:dd:ee:ff",
-				Location: &pb.Location{
-					Latitude:  p64(5151042000),
-					Longitude: p64(-321830600),
-				},
-			},
-		},
+func TestIntFromCoord(t *testing.T) {
+	for _, c := range []struct {
+		in   float64
+		want int64
+	}{
+		{51.510420, 5151042000},
+		{-3.218306, -321830600},
+		{0, 0},
+	} {
+		if got := IntFromCoord(c.in); got != c.want {
+			t.Errorf("IntFromCoord(%v) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestRewriteAppleWLocCoords(t *testing.T) {
+	in := sampleWLoc()
+	payload, err := proto.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lat, lon := IntFromCoord(51.510420), IntFromCoord(-3.218306)
+
+	out, modified := rewriteAppleWLocCoords(payload, lat, lon)
+	if modified != 4 {
+		t.Errorf("modified = %d, want 4 (2 injected + 2 replaced)", modified)
 	}
 
-	wloc.NumCellResults = nil
-	wloc.NumWifiResults = nil
-	wloc.DeviceType = nil
+	got := &pb.AppleWLoc{}
+	if err := proto.Unmarshal(out, got); err != nil {
+		t.Fatalf("rewritten payload does not parse: %v", err)
+	}
+	if len(got.WifiDevices) != len(in.WifiDevices) {
+		t.Fatalf("wifi device count = %d, want %d", len(got.WifiDevices), len(in.WifiDevices))
+	}
+	for i, d := range got.WifiDevices {
+		if d.Bssid != in.WifiDevices[i].Bssid {
+			t.Errorf("device %d bssid = %q, want %q", i, d.Bssid, in.WifiDevices[i].Bssid)
+		}
+		if d.GetLocation().GetLatitude() != lat || d.GetLocation().GetLongitude() != lon {
+			t.Errorf("device %d location = (%d, %d), want (%d, %d)", i,
+				d.GetLocation().GetLatitude(), d.GetLocation().GetLongitude(), lat, lon)
+		}
+	}
+	// Non-coordinate fields are preserved byte-for-byte.
+	if loc := got.WifiDevices[1].Location; loc.GetHorizontalAccuracy() != 39 || loc.GetAltitude() != 530 {
+		t.Errorf("location extras not preserved: %+v", loc)
+	}
+	if got.GetNumWifiResults() != -1 || got.GetAppBundleId() != "com.apple.locationd" {
+		t.Errorf("top-level fields not preserved: %+v", got)
+	}
+}
 
-	protoBytes, _ := proto.Marshal(wloc)
-	t.Logf("With nil fields: %d bytes", len(protoBytes))
-	t.Logf("Hex: %x", protoBytes)
+func TestRewritePreservesUnknownFields(t *testing.T) {
+	payload, err := proto.Marshal(sampleWLoc())
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = protowire.AppendTag(payload, 99, protowire.VarintType)
+	payload = protowire.AppendVarint(payload, 12345)
 
-	wloc3 := &pb.AppleWLoc{
-		WifiDevices: []*pb.WifiDevice{
-			{
-				Bssid: "aa:bb:cc:dd:ee:ff",
-				Location: &pb.Location{
-					Latitude:  p64(5151042000),
-					Longitude: p64(-321830600),
-				},
-			},
-		},
+	out, _ := rewriteAppleWLocCoords(payload, 1, 2)
+	got := &pb.AppleWLoc{}
+	if err := proto.Unmarshal(out, got); err != nil {
+		t.Fatal(err)
+	}
+	if want := payload[len(payload)-4:]; !bytes.Equal(got.ProtoReflect().GetUnknown(), want) {
+		t.Errorf("unknown fields = %x, want %x", got.ProtoReflect().GetUnknown(), want)
+	}
+}
+
+func TestRewriteMalformedPayloadPassesThrough(t *testing.T) {
+	bad := []byte{0x12, 0x7f, 0x00} // field 2, LEN 127, but only 1 byte follows
+	out, _ := rewriteAppleWLocCoords(bad, 1, 2)
+	if !bytes.Equal(out, bad) {
+		t.Errorf("malformed payload was modified: %x", out)
+	}
+}
+
+func TestBuildWlocResponse(t *testing.T) {
+	payload := []byte{0xde, 0xad, 0xbe, 0xef}
+	got, err := buildWlocResponse(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]byte{}, wlocResponseHeader...), 0x00, 0x04, 0xde, 0xad, 0xbe, 0xef)
+	if !bytes.Equal(got, want) {
+		t.Errorf("got %x, want %x", got, want)
 	}
 
-	protoBytes3, _ := proto.Marshal(wloc3)
-	t.Logf("Without setting fields: %d bytes", len(protoBytes3))
-	t.Logf("Hex: %x", protoBytes3)
+	if _, err := buildWlocResponse(make([]byte, 1<<16)); err == nil {
+		t.Error("oversized payload accepted; length field would overflow")
+	}
+}
+
+func newWlocRequest(body []byte) *http.Request {
+	return httptest.NewRequest(http.MethodPost, "https://gs-loc.apple.com/clls/wloc", bytes.NewReader(body))
+}
+
+func TestHandleLocationRequestSpoofs(t *testing.T) {
+	setSpoofConfig(51.510420, -3.218306, true)
+	t.Cleanup(func() { setSpoofConfig(0, 0, false) })
+
+	payload, err := proto.Marshal(sampleWLoc())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := ArpcSerialize(sampleArpc(t, payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, resp := handleLocationRequest(newWlocRequest(body))
+	if resp == nil {
+		t.Fatal("expected a spoofed response, got pass-through")
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(raw, wlocResponseHeader) {
+		t.Fatalf("response missing header: %x", raw)
+	}
+	n := int(binary.BigEndian.Uint16(raw[len(wlocResponseHeader):]))
+	rest := raw[len(wlocResponseHeader)+2:]
+	if n != len(rest) {
+		t.Fatalf("embedded length %d != actual %d", n, len(rest))
+	}
+	got := &pb.AppleWLoc{}
+	if err := proto.Unmarshal(rest, got); err != nil {
+		t.Fatal(err)
+	}
+	for i, d := range got.WifiDevices {
+		if d.GetLocation().GetLatitude() != 5151042000 || d.GetLocation().GetLongitude() != -321830600 {
+			t.Errorf("device %d not spoofed: %+v", i, d.GetLocation())
+		}
+	}
+}
+
+func TestHandleLocationRequestPassThroughKeepsBody(t *testing.T) {
+	body := []byte("definitely not arpc")
+	req, resp := handleLocationRequest(newWlocRequest(body))
+	if resp != nil {
+		t.Fatal("expected pass-through for unparseable body")
+	}
+	forwarded, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(forwarded, body) {
+		t.Errorf("forwarded body = %q, want %q", forwarded, body)
+	}
+	if req.ContentLength != int64(len(body)) {
+		t.Errorf("ContentLength = %d, want %d", req.ContentLength, len(body))
+	}
 }

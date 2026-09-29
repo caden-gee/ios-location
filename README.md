@@ -17,7 +17,7 @@ TL;DR: iPhone scans for WIFI access points, sends the list of access points to A
 
 ## Building this yourself
 
-- Go to `./GoSpoofer/` and run `make.sh`
+- Go to `./GoSpoofer/`, run `go test ./...`, then `make.sh` (generates `golocationspoofer.h` and the static library)
 - Open `./location-spoofer.xcodeproj/` with XCode
 - Select a paid developer account (Required. PacketTunnel is a paid API)
 - Run on iPhone?

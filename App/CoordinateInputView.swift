@@ -35,24 +35,24 @@ struct CoordinateInputView: View {
     private let savedLocationsKey = "savedLocations"
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
                     HStack {
                         Image(systemName: "magnifyingglass")
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(.secondary)
                         TextField("Search a place, e.g. Times Square", text: $searchText)
                             .onSubmit { searchLocation() }
                         if !searchText.isEmpty {
                             Button(action: { searchText = "" }) {
                                 Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.secondary)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
                     .padding(12)
                     .background(Color(UIColor.secondarySystemBackground))
-                    .cornerRadius(10)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
 
                     MapReader { proxy in
                         Map(position: .constant(.region(region))) {
@@ -68,13 +68,13 @@ struct CoordinateInputView: View {
                         }
                     }
                     .frame(height: 280)
-                    .cornerRadius(12)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
 
                     VStack(spacing: 8) {
                         if let name = currentLocationName {
                             HStack {
                                 Image(systemName: "location.fill")
-                                    .foregroundColor(.green)
+                                    .foregroundStyle(.green)
                                 Text("Current location: \(name)")
                                     .font(.body)
                                     .fontWeight(.medium)
@@ -83,17 +83,17 @@ struct CoordinateInputView: View {
                         } else {
                             HStack {
                                 Image(systemName: "location.slash")
-                                    .foregroundColor(.secondary)
+                                    .foregroundStyle(.secondary)
                                 Text("No location set")
                                     .font(.body)
-                                    .foregroundColor(.secondary)
+                                    .foregroundStyle(.secondary)
                                 Spacer()
                             }
                         }
                     }
                     .padding(12)
                     .background(Color(UIColor.secondarySystemBackground))
-                    .cornerRadius(10)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
 
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
@@ -108,7 +108,7 @@ struct CoordinateInputView: View {
                         if savedLocations.isEmpty {
                             Text("No favorites yet. Tap + to add a location.")
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundStyle(.secondary)
                                 .padding(.vertical, 4)
                         } else {
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))], spacing: 10) {
@@ -119,7 +119,7 @@ struct CoordinateInputView: View {
                                     }) {
                                         HStack {
                                             Image(systemName: "mappin.circle.fill")
-                                                .foregroundColor(.blue)
+                                                .foregroundStyle(.blue)
                                             Text(loc.name)
                                                 .font(.subheadline)
                                                 .lineLimit(1)
@@ -128,9 +128,9 @@ struct CoordinateInputView: View {
                                         .padding(.vertical, 10)
                                         .padding(.horizontal, 12)
                                         .background(Color(UIColor.tertiarySystemBackground))
-                                        .cornerRadius(8)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
                                     }
-                                    .foregroundColor(.primary)
+                                    .foregroundStyle(.primary)
                                     .contextMenu {
                                         Button(role: .destructive) {
                                             deleteFavorite(loc)
@@ -144,7 +144,7 @@ struct CoordinateInputView: View {
                     }
                     .padding(12)
                     .background(Color(UIColor.secondarySystemBackground))
-                    .cornerRadius(10)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
                 .padding()
             }

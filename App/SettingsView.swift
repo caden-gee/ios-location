@@ -8,110 +8,90 @@ struct SettingsView: View {
     @ObservedObject private var diagLog = DiagLog.shared
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
-                // 关于
                 Section("About") {
-                    HStack {
-                        Text("Location Spoofer")
-                        Spacer()
-                        Text("Build \(buildNumber)")
-                            .foregroundColor(.secondary)
-                    }
-                    HStack {
-                        Text("Version")
-                        Spacer()
-                        Text(appVersion)
-                            .foregroundColor(.secondary)
-                    }
+                    LabeledContent("Version", value: "\(appVersion) (\(buildNumber))")
                 }
 
-                // 诊断信息
-                Section("Diagnostics (use when contacting support)") {
-                    diagnosticRow(label: "VPN Status", value: vpnStatusText)
-                    diagnosticRow(label: "Certificate Status", value: certificateStatusText)
-                    diagnosticRow(label: "Current Spoofed Location", value: currentLocationText)
-                    diagnosticRow(label: "Current Coordinates", value: currentCoordinatesText)
+                Section {
+                    diagnosticRow(label: "VPN", value: vpnStatusText)
+                    diagnosticRow(label: "Certificate", value: certificateStatusText)
+                    diagnosticRow(label: "Spoofed Location", value: currentLocationText)
+                    diagnosticRow(label: "Coordinates", value: currentCoordinatesText)
                     diagnosticRow(label: "Initial Setup", value: setupCompletedText)
 
-                    Button(action: { copyDiagnostic() }) {
-                        HStack {
-                            Image(systemName: "doc.on.doc")
-                            Text(showCopiedToast ? "Copied" : "Copy Diagnostics (incl. flow logs)")
-                            Spacer()
-                        }
-                        .foregroundColor(showCopiedToast ? .green : .blue)
+                    Button { copyDiagnostic() } label: {
+                        Label(showCopiedToast ? "Copied" : "Copy Diagnostics",
+                              systemImage: showCopiedToast ? "checkmark" : "doc.on.doc")
+                            .contentTransition(.symbolEffect(.replace))
                     }
+                    .sensoryFeedback(.success, trigger: showCopiedToast) { _, new in new }
+                } header: {
+                    Text("Diagnostics")
+                } footer: {
+                    Text("Copies the status above and the flow logs below. Include this when reporting a problem.")
                 }
 
-                // 流程日志
-                Section(header: HStack {
-                    Text("Flow Logs (most recent \(diagLog.entries.count))")
-                    Spacer()
-                    Button("Clear") { diagLog.clear() }
-                        .font(.caption)
-                        .foregroundColor(.red)
-                        .disabled(diagLog.entries.isEmpty)
-                }) {
-                    Button(action: { queryGoLogsViaIPC() }) {
-                        HStack {
-                            Image(systemName: "arrow.down.doc")
-                            Text("Fetch Go Proxy Logs (IPC)")
-                            Spacer()
-                        }
-                        .foregroundColor(.blue)
+                Section {
+                    Button { queryGoLogsViaIPC() } label: {
+                        Label("Fetch Proxy Logs", systemImage: "arrow.down.doc")
                     }
                     if diagLog.entries.isEmpty {
-                        Text("No logs yet. Run "Set as Location" once and come back.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        Text("No logs yet. Use a location once, then come back.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     } else {
                         ForEach(diagLog.entries.reversed()) { entry in
                             Text(entry.formatted)
                                 .font(.system(.caption, design: .monospaced))
                                 .textSelection(.enabled)
-                                .lineLimit(nil)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
+                } header: {
+                    HStack {
+                        Text("Flow Logs (\(diagLog.entries.count))")
+                        Spacer()
+                        Button("Clear", role: .destructive) { diagLog.clear() }
+                            .font(.footnote)
+                            .textCase(nil)
+                            .disabled(diagLog.entries.isEmpty)
+                    }
                 }
 
-                // 危险操作
-                Section("Advanced") {
-                    Button(role: .destructive, action: { showResetConfirm = true }) {
-                        HStack {
-                            Image(systemName: "arrow.counterclockwise")
-                            Text("Reset App (clears all settings and favorites)")
-                        }
+                Section {
+                    Button(role: .destructive) { showResetConfirm = true } label: {
+                        Label("Reset App", systemImage: "arrow.counterclockwise")
                     }
+                } footer: {
+                    Text("Clears all settings, favorites and certificate state. You'll need to run setup again.")
                 }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
             }
-            .alert("Confirm Reset App?", isPresented: $showResetConfirm) {
+            .alert("Reset Location Spoofer?", isPresented: $showResetConfirm) {
                 Button("Cancel", role: .cancel) { }
                 Button("Reset", role: .destructive) { resetApp() }
             } message: {
-                Text("This clears all settings, favorites, and certificate state.\n\nYou will need to go through the initial setup again after resetting.")
+                Text("This clears all settings, favorites and certificate state. You'll need to run setup again.")
             }
         }
     }
 
     // MARK: - 诊断信息收集
 
-    @ViewBuilder
     private func diagnosticRow(label: String, value: String) -> some View {
-        HStack {
-            Text(label)
-            Spacer()
+        LabeledContent(label) {
             Text(value)
-                .foregroundColor(.secondary)
-                .font(.system(.body, design: .monospaced))
+                .font(.callout.monospaced())
+                .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
         }
     }
 

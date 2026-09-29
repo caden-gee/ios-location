@@ -16,11 +16,6 @@ class GoLocationSpoofer {
 
     init() {
         self.proxyHandle = nil
-        golocationspoofer_init()
-    }
-
-    func hello() {
-        golocationspoofer_hello()
     }
 
     func version() -> String {

@@ -3,7 +3,8 @@ import NetworkExtension
 import os.log
 
 struct ContentView: View {
-    @State private var firstSetupCompleted: Bool = UserDefaults.standard.bool(forKey: "firstSetupCompleted")
+    // @AppStorage re-renders when FirstSetupView or a Settings reset writes this key.
+    @AppStorage("firstSetupCompleted") private var firstSetupCompleted = false
 
     var body: some View {
         Group {
@@ -13,16 +14,8 @@ struct ContentView: View {
                 FirstSetupView()
             }
         }
-        .onAppear {
-            loadVPNManagerIfExists()
-            // 监听 firstSetupCompleted 变化(FirstSetupView 完成 setup 后会写 UserDefaults)
-            NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { _ in
-                let newValue = UserDefaults.standard.bool(forKey: "firstSetupCompleted")
-                if newValue != firstSetupCompleted {
-                    firstSetupCompleted = newValue
-                }
-            }
-        }
+        .animation(.default, value: firstSetupCompleted)
+        .onAppear { loadVPNManagerIfExists() }
     }
 
     /// 进 App 时只加载已存在的 VPN 配置,不创建、不弹权限。

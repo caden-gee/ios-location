@@ -1,7 +1,7 @@
-import Foundation
+import SwiftUI
 
 /// 虚拟定位的运行状态
-/// 用 enum 收敛三态,SwiftUI 中用 switch 强制穷举,避免状态不一致
+/// 用 enum 收敛状态,SwiftUI 中用 switch 强制穷举,避免状态不一致
 enum SpoofingState: Equatable {
     /// 未开启
     case off
@@ -12,47 +12,51 @@ enum SpoofingState: Equatable {
     /// 操作失败(具体错误原因)
     case failed(reason: String)
 
-    /// 顶部状态卡主文案
+    /// 状态卡主文案
     var primaryText: String {
         switch self {
         case .off:
-            return "Off"
+            return "Not spoofing"
         case .pending(_, let isClosing):
-            return isClosing ? "Disabling…" : "Activating…"
+            return isClosing ? "Turning off…" : "Activating…"
         case .on(let name):
-            return "Active: \(name)"
-        case .failed(let reason):
-            return "Failed: \(reason)"
+            return name
+        case .failed:
+            return "Couldn't change location"
         }
     }
 
-    /// 顶部状态卡副文案(可选)
+    /// 状态卡副文案(可选)
     var subText: String? {
         switch self {
-        case .off, .on, .failed:
-            return nil
+        case .off:
+            return "Search or tap the map to pick a location"
         case .pending:
-            return "Please restart Location Services"
+            return "Restart Location Services to finish"
+        case .on:
+            return "Your location is being spoofed"
+        case .failed(let reason):
+            return reason
         }
     }
 
-    /// 状态卡圆点颜色(用 SwiftUI Color 名)
-    var indicatorColorName: String {
+    /// 状态卡图标
+    var symbolName: String {
         switch self {
-        case .off:      return "gray"
-        case .pending:  return "yellow"
-        case .on:       return "blue"
-        case .failed:   return "red"
+        case .off:      return "location.slash"
+        case .pending:  return "hourglass"
+        case .on:       return "location.fill"
+        case .failed:   return "exclamationmark.triangle.fill"
         }
     }
 
-    /// 主操作按钮文案(nil 表示不显示按钮)
-    var actionLabel: String? {
+    /// 状态卡图标颜色
+    var tint: Color {
         switch self {
-        case .off:      return nil   // off 时主操作藏在底部"设为虚拟定位"
-        case .pending:  return nil   // pending 时按钮在重启教学页里
-        case .on:       return "Disable"
-        case .failed:   return "Retry"
+        case .off:      return .secondary
+        case .pending:  return .orange
+        case .on:       return .accentColor
+        case .failed:   return .red
         }
     }
 }

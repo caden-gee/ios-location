@@ -23,12 +23,72 @@ enum SetupStep: Int, CaseIterable {
     var title: String {
         switch self {
         case .welcome: return ""
-        case .vpn: return "Authorize VPN"
+        case .vpn: return "Allow VPN"
         case .cert: return "Download Certificate"
         case .install: return "Install Profile"
         case .trust: return "Trust Certificate"
         case .done: return ""
         }
+    }
+
+    /// The step the Back button returns to; nil where going back makes no sense.
+    var previous: SetupStep? {
+        switch self {
+        case .welcome, .vpn, .done: return nil
+        case .cert: return .vpn
+        case .install: return .cert
+        case .trust: return .install
+        }
+    }
+}
+
+/// Numbered instructions, each read by VoiceOver as "Step N: …",
+/// shared by setup and the Location Services restart guides.
+struct NumberedSteps: View {
+    let steps: [String]
+    /// Zero-based indices to emphasise (e.g. "Wait 3 seconds").
+    var emphasized: Set<Int> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text("\(index + 1)")
+                        .font(.subheadline.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(.white)
+                        .frame(minWidth: 24, minHeight: 24)
+                        .background(Circle().fill(Color.accentColor))
+                        .accessibilityHidden(true)
+                    Text(step)
+                        .fontWeight(emphasized.contains(index) ? .semibold : .regular)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Step \(index + 1): \(step)")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Full-width primary action used across onboarding and sheets.
+struct PrimaryButton: View {
+    let title: String
+    var isBusy = false
+    var role: ButtonRole? = nil
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: role, action: action) {
+            HStack(spacing: 8) {
+                if isBusy { ProgressView() }
+                Text(title)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .disabled(isBusy)
     }
 }
 
@@ -39,11 +99,12 @@ struct FirstSetupView: View {
     @State private var showInstallConfirm: Bool = false
     @State private var showTrustConfirm: Bool = false
 
-    /// 配置完成回调,由 ContentView 监听 firstSetupCompleted 变化即可,这里不必显式传
+    private var showError: Binding<Bool> {
+        Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })
+    }
 
     var body: some View {
         ZStack {
-            // 整体淡入效果
             switch currentStep {
             case .welcome:
                 welcomeView
@@ -57,88 +118,91 @@ struct FirstSetupView: View {
             }
         }
         .animation(.easeInOut(duration: 0.3), value: currentStep)
-        .alert("Error", isPresented: .constant(errorMessage != nil), presenting: errorMessage) { _ in
-            Button("OK") { errorMessage = nil }
+        .sensoryFeedback(.success, trigger: currentStep) { _, new in new == .done }
+        .alert("Something Went Wrong", isPresented: showError, presenting: errorMessage) { _ in
+            Button("OK") { }
         } message: { msg in
             Text(msg)
         }
-        .alert("Confirm Profile Installed", isPresented: $showInstallConfirm) {
-            Button("I've Installed It") { currentStep = .trust }
-            Button("Install", role: .cancel) { }
+        .alert("Profile Installed?", isPresented: $showInstallConfirm) {
+            Button("Yes, Continue") { currentStep = .trust }
+            Button("Not Yet", role: .cancel) { }
         } message: {
-            Text("Please confirm you have installed the profile in Settings > General > VPN & Device Management. If not, go to Settings to complete the installation first, then come back and confirm.")
+            Text("Make sure the profile shows under Settings > General > VPN & Device Management before continuing.")
         }
-        .alert("Confirm Certificate Trusted", isPresented: $showTrustConfirm) {
-            Button("I've Trusted It") { confirmTrust() }
-            Button("Settings", role: .cancel) { }
+        .alert("Certificate Trusted?", isPresented: $showTrustConfirm) {
+            Button("Yes, Continue") { confirmTrust() }
+            Button("Not Yet", role: .cancel) { }
         } message: {
-            Text("Please confirm you have enabled the switch for Location Spoofer CA in Settings > General > About > Certificate Trust Settings. If not, go to Settings to complete it, then come back and confirm.")
+            Text("Make sure the Location Spoofer CA switch is on in Settings > General > About > Certificate Trust Settings. Spoofing will not work without it.")
         }
     }
 
-    // MARK: - 欢迎页
+    // MARK: - Welcome
 
     private var welcomeView: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: 16) {
             Spacer()
 
             Image(systemName: "location.fill.viewfinder")
                 .font(.system(size: 72))
-                .foregroundColor(.blue)
+                .foregroundStyle(.tint)
+                .accessibilityHidden(true)
+                .padding(.bottom, 8)
 
             Text("Welcome to Location Spoofer")
-                .font(.largeTitle).fontWeight(.bold)
+                .font(.largeTitle.bold())
 
-            Text("Set up in 3 steps, then change your location with one tap")
+            Text("Three quick steps, then change your location with one tap.")
                 .font(.title3)
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
 
             Spacer()
 
-            Button(action: { currentStep = .vpn }) {
-                Text("Start Setup")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(12)
-            }
-            .padding(.horizontal, 32)
+            PrimaryButton(title: "Start Setup") { currentStep = .vpn }
 
-            Text("Setup will request VPN permission and certificate installation.\nThese are required to modify your location.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-                .padding(.bottom, 32)
+            Text("Setup asks for VPN permission and installs a certificate. Both stay on this device and are needed to change your location.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, 32)
+        .padding(.bottom, 24)
     }
 
-    // MARK: - 进度页(共用 vpn / cert / trust 三个步骤)
+    // MARK: - Steps (vpn / cert / install / trust)
 
     private var progressView: some View {
-        VStack(spacing: 32) {
-            Spacer().frame(height: 40)
+        VStack(spacing: 24) {
+            HStack {
+                if let previous = currentStep.previous {
+                    Button {
+                        currentStep = previous
+                    } label: {
+                        Label("Back", systemImage: "chevron.left")
+                    }
+                    .disabled(isProcessing)
+                }
+                Spacer()
+            }
+            .frame(minHeight: 44)
 
-            // 进度条:1/3 → 2/3 → 3/3
             progressIndicator
 
-            // 当前步骤标题
             Text(currentStep.title)
-                .font(.title).fontWeight(.bold)
+                .font(.title.bold())
+                .multilineTextAlignment(.center)
 
-            // 步骤说明
-            stepInstruction
-                .padding(.horizontal, 32)
+            ScrollView {
+                stepInstruction
+                    .padding(.vertical, 8)
+            }
+            .scrollBounceBehavior(.basedOnSize)
 
-            Spacer()
-
-            // 操作按钮
             stepActionButton
-                .padding(.horizontal, 32)
-                .padding(.bottom, 32)
         }
+        .padding(.horizontal, 32)
+        .padding(.bottom, 24)
     }
 
     private var progressIndicator: some View {
@@ -148,71 +212,64 @@ struct FirstSetupView: View {
                     .fill(progressColor(at: idx))
                     .frame(width: 12, height: 12)
                 if idx < 3 {
-                    Rectangle()
-                        .fill(progressColor(at: idx))
+                    Capsule()
+                        .fill(progressColor(at: idx + 1))
                         .frame(width: 40, height: 2)
                 }
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Step \(currentStep.progressIndex ?? 0) of 3")
     }
 
     private func progressColor(at index: Int) -> Color {
-        guard let current = currentStep.progressIndex else { return .gray.opacity(0.3) }
-        return index <= current ? .blue : .gray.opacity(0.3)
+        guard let current = currentStep.progressIndex, index <= current else {
+            return Color(uiColor: .systemFill)
+        }
+        return .accentColor
     }
 
     @ViewBuilder
     private var stepInstruction: some View {
         switch currentStep {
         case .vpn:
-            VStack(spacing: 12) {
-                Text("Tap Allow in the system prompt and enter your passcode")
-                    .font(.body)
-                    .multilineTextAlignment(.center)
+            VStack(spacing: 20) {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 48))
-                    .foregroundColor(.blue.opacity(0.6))
-                    .padding(.top, 20)
+                    .foregroundStyle(.tint)
+                    .accessibilityHidden(true)
+                Text("Location Spoofer uses an on-device VPN to adjust location lookups. Tap Allow in the system prompt and enter your passcode.")
+                    .multilineTextAlignment(.center)
             }
         case .cert:
             VStack(spacing: 12) {
-                Text("Tap the button below and Safari will prompt you to install the certificate.")
-                    .font(.body)
+                Text("Tap the button below. Safari will open and ask to download a configuration profile. Tap Allow.")
                     .multilineTextAlignment(.center)
-                Text("Follow the system prompts to download the certificate.")
-                    .font(.body)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                Text("If Safari says the certificate already exists, or it goes straight to the Trust Settings screen, the certificate is already installed. Close Safari and continue to the next step.")
-                    .font(.body)
-                    .foregroundColor(.secondary)
+                Text("If Safari says the profile already exists, it's already downloaded. Come back here and continue.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
         case .install:
-            VStack(alignment: .leading, spacing: 14) {
-                Text("After downloading the certificate, install it with these steps:")
-                    .font(.body)
-                Text("① Open iPhone Settings")
-                Text("② Tap the downloaded profile at the top")
-                Text("③ Tap Install in the upper right and enter your passcode")
-                Text("④ Return to this app after installation")
-                    .font(.body)
-                    .foregroundColor(.blue)
-                    .padding(.top, 8)
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Now install the downloaded profile:")
+                NumberedSteps(steps: [
+                    "Open the Settings app",
+                    "Tap Profile Downloaded near the top",
+                    "Tap Install and enter your passcode",
+                    "Return to this app",
+                ])
             }
         case .trust:
-            VStack(alignment: .leading, spacing: 14) {
-                Text("After downloading the certificate, you must trust it manually:")
-                    .font(.body)
-                Text("① Open iPhone Settings")
-                Text("② Go to General > About")
-                Text("③ Scroll to the bottom and tap Certificate Trust Settings")
-                Text("④ Enable the switch for Location Spoofer CA")
-                Text("⑤ Tap Continue in the prompt")
-                Text("Return to this app when done")
-                    .font(.body)
-                    .foregroundColor(.blue)
-                    .padding(.top, 8)
+            VStack(alignment: .leading, spacing: 16) {
+                Text("iOS requires you to trust the certificate manually:")
+                NumberedSteps(steps: [
+                    "Open the Settings app",
+                    "Go to General > About",
+                    "Scroll down and tap Certificate Trust Settings",
+                    "Turn on Location Spoofer CA",
+                    "Tap Continue, then return to this app",
+                ])
             }
         default:
             EmptyView()
@@ -223,78 +280,43 @@ struct FirstSetupView: View {
     private var stepActionButton: some View {
         switch currentStep {
         case .vpn:
-            Button(action: { triggerVPNSetup() }) {
-                Text(isProcessing ? "Configuring..." : "Authorize VPN")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(isProcessing ? Color.gray : Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(12)
+            PrimaryButton(title: isProcessing ? "Connecting…" : "Allow VPN", isBusy: isProcessing) {
+                triggerVPNSetup()
             }
-            .disabled(isProcessing)
         case .cert:
-            Button(action: { triggerCertInstall() }) {
-                Text(isProcessing ? "Opening..." : "Install Certificate")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(isProcessing ? Color.gray : Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(12)
+            PrimaryButton(title: isProcessing ? "Opening Safari…" : "Download Certificate", isBusy: isProcessing) {
+                triggerCertInstall()
             }
-            .disabled(isProcessing)
         case .install:
-            Button(action: { showInstallConfirm = true }) {
-                Text("I've Installed It, Next")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(12)
-            }
+            PrimaryButton(title: "I've Installed the Profile") { showInstallConfirm = true }
         case .trust:
-            Button(action: { showTrustConfirm = true }) {
-                Text("I've Completed Trust Setup")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(12)
-            }
+            PrimaryButton(title: "I've Trusted the Certificate") { showTrustConfirm = true }
         default:
             EmptyView()
         }
     }
 
-    // MARK: - 完成页
+    // MARK: - Done
 
     private var doneView: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: 16) {
             Spacer()
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 80))
-                .foregroundColor(.green)
-            Text("Setup Complete!")
-                .font(.largeTitle).fontWeight(.bold)
-            Text("You can now change your location with one tap")
+                .foregroundStyle(.green)
+                .accessibilityHidden(true)
+                .padding(.bottom, 8)
+            Text("You're All Set")
+                .font(.largeTitle.bold())
+            Text("Pick any place on the map to use it as your location.")
                 .font(.title3)
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
             Spacer()
-            Button(action: { completeSetup() }) {
-                Text("Get Started")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(12)
-            }
-            .padding(.horizontal, 32)
-            .padding(.bottom, 32)
+            PrimaryButton(title: "Get Started") { completeSetup() }
         }
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, 32)
+        .padding(.bottom, 24)
     }
 
     // MARK: - 占位:D2/D3 实现
