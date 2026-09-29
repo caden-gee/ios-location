@@ -24,7 +24,6 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
         goLocationSpoofer = GoLocationSpoofer()
 
-        goLocationSpoofer?.hello()
         let version = goLocationSpoofer?.version() ?? "unknown"
         os_log("Go spoofer library version: %@", log: OSLog.default, type: .info, version)
 

@@ -9,12 +9,13 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/big"
+	"net"
 	"net/http"
 	"runtime/cgo"
 	"strings"
@@ -23,8 +24,8 @@ import (
 
 	"github.com/elazarl/goproxy"
 	pb "golocationspoofer/pb"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 )
 
 //#cgo CFLAGS: -DGOOS_ios -DNDEBUG
@@ -33,9 +34,31 @@ import (
 import "C"
 
 var globalCACert *tls.Certificate
-var spoofLat float64 = 0.0
-var spoofLon float64 = 0.0
-var spoofingEnabled bool = false
+
+// spoofLat/spoofLon/spoofingEnabled are written from the tunnel thread via
+// startproxy and read from the proxy's request goroutines, so guard them.
+var (
+	spoofMu         sync.RWMutex
+	spoofLat        float64
+	spoofLon        float64
+	spoofingEnabled bool
+)
+
+func setSpoofConfig(lat, lon float64, enabled bool) {
+	spoofMu.Lock()
+	spoofLat, spoofLon, spoofingEnabled = lat, lon, enabled
+	spoofMu.Unlock()
+}
+
+func spoofConfig() (lat, lon float64, enabled bool) {
+	spoofMu.RLock()
+	defer spoofMu.RUnlock()
+	return spoofLat, spoofLon, spoofingEnabled
+}
+
+// wlocResponseHeader is the fixed prefix Apple's /clls/wloc responses start with,
+// followed by a big-endian u16 payload length and the protobuf payload.
+var wlocResponseHeader = []byte{0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}
 
 // 诊断日志环形缓冲:最近 maxLogEntries 条 logEvent 调用,带时间戳。
 // drainlogs 导出函数返回缓冲内容(C 串)给 Tunnel→App 诊断面板,clear 缓冲。
@@ -66,29 +89,6 @@ func golocationspoofer_drainlogs() *C.char {
 	return C.CString(combined)
 }
 
-func init() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("RECOVERED FROM PANIC in init: %v", r)
-		}
-	}()
-}
-
-func p64(i int) *int64 {
-	i64 := int64(i)
-	return &i64
-}
-
-//export golocationspoofer_hello
-func golocationspoofer_hello() {
-}
-
-// golocationspoofer_init is called from Swift to set up panic recovery
-//
-//export golocationspoofer_init
-func golocationspoofer_init() {
-}
-
 //export golocationspoofer_version
 func golocationspoofer_version() *C.char {
 	return C.CString("1.0.0")
@@ -111,9 +111,7 @@ func golocationspoofer_startproxy(certData *C.char, keyData *C.char, lat C.doubl
 		}
 	}()
 
-	spoofLat = float64(lat)
-	spoofLon = float64(lon)
-	spoofingEnabled = enabled != 0
+	setSpoofConfig(float64(lat), float64(lon), enabled != 0)
 
 	if certData != nil && keyData != nil {
 		certPEM := C.GoString(certData)
@@ -125,7 +123,7 @@ func golocationspoofer_startproxy(certData *C.char, keyData *C.char, lat C.doubl
 			return 0
 		}
 		globalCACert = parsedCert
-		log.Printf("Location spoofer: MITM enabled, coordinates: %.6f, %.6f", spoofLat, spoofLon)
+		log.Printf("Location spoofer: MITM enabled, coordinates: %.6f, %.6f", float64(lat), float64(lon))
 	}
 
 	proxy := goproxy.NewProxyHttpServer()
@@ -136,14 +134,19 @@ func golocationspoofer_startproxy(certData *C.char, keyData *C.char, lat C.doubl
 		setupCertServing(proxy, globalCACert)
 	}
 
-	if spoofingEnabled {
+	if enabled != 0 {
 		setupLocationSpoofing(proxy)
 	}
 
-	srv := &http.Server{
-		Addr:    "127.0.0.1:8888",
-		Handler: proxy,
+	// Bind synchronously so a failure (e.g. port still held by a previous
+	// tunnel instance) is reported to Swift instead of a handle to a dead server.
+	ln, err := net.Listen("tcp", "127.0.0.1:8888")
+	if err != nil {
+		log.Printf("Failed to listen on 127.0.0.1:8888: %v", err)
+		return 0
 	}
+
+	srv := &http.Server{Handler: proxy}
 
 	h := cgo.NewHandle(srv)
 	go func() {
@@ -152,7 +155,7 @@ func golocationspoofer_startproxy(certData *C.char, keyData *C.char, lat C.doubl
 				log.Printf("PANIC in HTTP server: %v", r)
 			}
 		}()
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP server error: %v", err)
 		}
 	}()
@@ -183,11 +186,12 @@ func golocationspoofer_stopproxy(h C.uintptr_t) C.int {
 
 //export golocationspoofer_getcoords
 func golocationspoofer_getcoords() (lat, lon C.double, enabled C.int) {
+	curLat, curLon, curEnabled := spoofConfig()
 	var e C.int = 0
-	if spoofingEnabled {
+	if curEnabled {
 		e = 1
 	}
-	return C.double(spoofLat), C.double(spoofLon), e
+	return C.double(curLat), C.double(curLon), e
 }
 
 func setupMITM(proxy *goproxy.ProxyHttpServer, cert *tls.Certificate) {
@@ -270,11 +274,16 @@ func setupLocationSpoofing(proxy *goproxy.ProxyHttpServer) {
 	})
 }
 
-func handleLocationRequest(req *http.Request) (*http.Request, *http.Response) {
+// handleLocationRequest rewrites a /clls/wloc request into a response that
+// places every queried access point at the spoof coordinates. On any parse
+// failure it returns the request untouched (with its body restored) so it is
+// forwarded to Apple and location keeps working unspoofed.
+func handleLocationRequest(req *http.Request) (outReq *http.Request, outResp *http.Response) {
+	outReq = req
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("PANIC in handleLocationRequest: %v", r)
-			logEvent(fmt.Sprintf("PANIC in handleLocationRequest: %v", r))
+			logEvent(fmt.Sprintf("PANIC in handleLocationRequest: %v, passing through", r))
+			outReq, outResp = req, nil
 		}
 	}()
 
@@ -282,45 +291,41 @@ func handleLocationRequest(req *http.Request) (*http.Request, *http.Response) {
 
 	body, err := io.ReadAll(req.Body)
 	req.Body.Close()
+	// Put the body back so every pass-through path forwards the original bytes.
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
 	if err != nil {
-		log.Printf("Failed to read request body: %v", err)
 		logEvent(fmt.Sprintf("Failed to read request body: %v, passing through", err))
 		return req, nil
 	}
 	logEvent(fmt.Sprintf("Request body read length=%d bytes", len(body)))
 
-	arpc := ArpcDeserialize(body)
-	if arpc == nil {
-		logEvent("ArpcDeserialize returned nil (possibly gzip/version mismatch), passing through")
+	arpc, err := ArpcDeserialize(body)
+	if err != nil {
+		logEvent(fmt.Sprintf("ARPC parse failed: %v, passing through", err))
 		return req, nil
 	}
 	logEvent(fmt.Sprintf("ARPC parsed OK version=%s payloadLen=%d", arpc.Version, len(arpc.Payload)))
 
-	// 仅用 proto.Unmarshal 做解析验证 + 统计 wifiCount,不再用于改写。
+	// Only used to validate the payload and count devices; the rewrite below
+	// works on raw wire bytes so unknown fields survive.
 	wloc := &pb.AppleWLoc{}
 	if err := proto.Unmarshal(arpc.Payload, wloc); err != nil {
-		log.Printf("Failed to unmarshal protobuf: %v", err)
 		logEvent(fmt.Sprintf("protobuf Unmarshal failed: %v, passing through", err))
 		return req, nil
 	}
-
 	wifiCount := len(wloc.WifiDevices)
-	log.Printf("Spoofing location for %d WiFi devices", wifiCount)
 	logEvent(fmt.Sprintf("AppleWLoc parsed wifiCount=%d", wifiCount))
 
-	// raw wire 递归 splice:只动 Location.Latitude(tag 1 varint)/Longitude(tag 2 varint)的字节,
-	// 其他所有字段(HorizontalAccuracy/Altitude/未知 tag/NumCellResults/DeviceType 等)wire 字节级保留。
-	lat := IntFromCoord(spoofLat)
-	lon := IntFromCoord(spoofLon)
-	newPayload, modifiedFields := rewriteAppleWLocCoords(arpc.Payload, lat, lon)
-	logEvent(fmt.Sprintf("raw wire rewrite done in=%d B out=%d B modified %d lat/lon fields (spoof=(%.6f, %.6f))", len(arpc.Payload), len(newPayload), modifiedFields, spoofLat, spoofLon))
+	curLat, curLon, _ := spoofConfig()
+	newPayload, modifiedFields := rewriteAppleWLocCoords(arpc.Payload, IntFromCoord(curLat), IntFromCoord(curLon))
+	logEvent(fmt.Sprintf("raw wire rewrite done in=%d B out=%d B modified %d lat/lon fields (spoof=(%.6f, %.6f))", len(arpc.Payload), len(newPayload), modifiedFields, curLat, curLon))
 
-	// 手工构造 ARPC 响应:magic 8B + 大端 2B 长度 + payload
-	initialBytes, _ := hex.DecodeString("0001000000010000")
-	int16Len := make([]byte, 2)
-	binary.BigEndian.PutUint16(int16Len, uint16(len(newPayload)))
-	responseBytes := append(initialBytes, int16Len...)
-	responseBytes = append(responseBytes, newPayload...)
+	responseBytes, err := buildWlocResponse(newPayload)
+	if err != nil {
+		logEvent(fmt.Sprintf("%v, passing through", err))
+		return req, nil
+	}
 
 	resp := &http.Response{
 		Request:       req,
@@ -336,6 +341,19 @@ func handleLocationRequest(req *http.Request) (*http.Request, *http.Response) {
 	resp.Header.Set("Content-Type", "application/octet-stream")
 	logEvent(fmt.Sprintf("Response sent 200 OK respLen=%d wifiCount=%d", len(responseBytes), wifiCount))
 	return req, resp
+}
+
+// buildWlocResponse frames a protobuf payload as a /clls/wloc response body.
+// The length field is only 16 bits, so larger payloads are rejected rather
+// than silently truncated into a corrupt response.
+func buildWlocResponse(payload []byte) ([]byte, error) {
+	if len(payload) > math.MaxUint16 {
+		return nil, fmt.Errorf("response payload %d B exceeds u16 length field", len(payload))
+	}
+	out := make([]byte, 0, len(wlocResponseHeader)+2+len(payload))
+	out = append(out, wlocResponseHeader...)
+	out = binary.BigEndian.AppendUint16(out, uint16(len(payload)))
+	return append(out, payload...), nil
 }
 
 func generateCA() (certPEM, keyPEM []byte, err error) {
@@ -397,23 +415,8 @@ func parseCA(caCert, caKey []byte) (*tls.Certificate, error) {
 	return &parsedCert, nil
 }
 
-func SerializeProto(p proto.Message, initial []byte) ([]byte, error) {
-	if p == nil {
-		panic("protobuf is nil")
-	}
-	b, err := proto.Marshal(p)
-	if err != nil {
-		return nil, err
-	}
-	int16Len := make([]byte, 2)
-	binary.BigEndian.PutUint16(int16Len, uint16(len(b)))
-	if initial != nil {
-		b = append(initial, append(int16Len, b...)...)
-	}
-	return b, nil
-}
-
 func main() {}
+
 // rewriteAppleWLocCoords 在 AppleWLoc 原始 wire bytes 上扫描所有 WifiDevices(tag=2 LEN),
 // 对每个 WifiDevice 递归调用 rewriteWifiDevice 把 lat/lon 改成 spoof 坐标。
 // 其他顶层字段(NumCellResults/CellTowerResponse/DeviceType/未知 tag 等)wire 字节级原样保留。
@@ -551,4 +554,3 @@ func rewriteLocation(loc []byte, lat, lon int64) ([]byte, int) {
 	}
 	return out, modified
 }
-

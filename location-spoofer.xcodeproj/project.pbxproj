@@ -61,11 +61,9 @@
 		C39104973165BCC05DD24A29 /* GoLocationSpoofer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoLocationSpoofer.swift; sourceTree = "<group>"; };
 		CD5254CDFD133A13476AE2AF /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		D5331D5ACB7EA6F706F801C6 /* LocationConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationConfiguration.swift; sourceTree = "<group>"; };
-		D69DDAC33E62F702A45588B4 /* golocationspoofer */ = {isa = PBXFileReference; path = golocationspoofer; sourceTree = "<group>"; };
 		D8D757F13BAAC8E71496C7AF /* location-spoofer-tunnel.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = "location-spoofer-tunnel.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		E44E9A2EB20430E3EC632ACB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		EA1A448A024912E5C0C1B224 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
-		F5260FBDE7553CFC5121A859 /* libgolocationspoofer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = libgolocationspoofer.h; sourceTree = "<group>"; };
 		FBFA1C54411CE6D6F972A0AE /* location-spoofer-tunnel-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "location-spoofer-tunnel-Bridging-Header.h"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -130,10 +128,8 @@
 		C628EE71A531D3540CA4A63B /* GoSpoofer */ = {
 			isa = PBXGroup;
 			children = (
-				D69DDAC33E62F702A45588B4 /* golocationspoofer */,
 				224FCEBD569F7C92B3B1B929 /* golocationspoofer.h */,
 				23337A02247D09C30D523817 /* libgolocationspoofer.a */,
-				F5260FBDE7553CFC5121A859 /* libgolocationspoofer.h */,
 			);
 			path = GoSpoofer;
 			sourceTree = "<group>";
