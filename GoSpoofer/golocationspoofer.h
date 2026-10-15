@@ -21,7 +21,7 @@ extern const char *_GoStringPtr(_GoString_ s);
 /* Start of preamble from import "C" comments.  */
 
 
-#line 27 "main.go"
+#line 30 "main.go"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -88,10 +88,8 @@ typedef struct { void *data; GoInt len; GoInt cap; } GoSlice;
 extern "C" {
 #endif
 
+extern char* golocationspoofer_drainlogs(void);
 extern void golocationspoofer_hello(void);
-
-// golocationspoofer_init is called from Swift to set up panic recovery
-//
 extern void golocationspoofer_init(void);
 extern char* golocationspoofer_version(void);
 
@@ -103,6 +101,14 @@ struct golocationspoofer_generateca_return {
 extern struct golocationspoofer_generateca_return golocationspoofer_generateca(void);
 extern uintptr_t golocationspoofer_startproxy(char* certData, char* keyData, double lat, double lon, int enabled);
 extern int golocationspoofer_stopproxy(uintptr_t h);
+
+/* Return type for golocationspoofer_getcoords */
+struct golocationspoofer_getcoords_return {
+	double r0; /* lat */
+	double r1; /* lon */
+	int r2; /* enabled */
+};
+extern struct golocationspoofer_getcoords_return golocationspoofer_getcoords(void);
 
 #ifdef __cplusplus
 }

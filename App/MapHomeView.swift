@@ -953,7 +953,7 @@ struct MapHomeView: View {
                             }
                         }
                     } else {
-                        DiagLog.add("[cold-start] finish failed:\(errMsg ?? "VPN start failed")
+                        DiagLog.add("[cold-start] finish failed:\(errMsg ?? "VPN start failed")")
                         completion(false, errMsg ?? "VPN start failed")
                     }
                 }
@@ -1055,7 +1055,7 @@ struct MapHomeView: View {
                     }
                 }
             } else {
-                DiagLog.add("[hot-restart] finish failed:\(errMsg ?? "VPN reconnect failed")
+                DiagLog.add("[hot-restart] finish failed:\(errMsg ?? "VPN reconnect failed")")
                 spoofingState = .failed(reason: errMsg ?? "VPN reconnect failed")
                 isSpoofing = false
             }

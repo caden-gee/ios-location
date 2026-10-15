@@ -62,7 +62,7 @@ struct SettingsView: View {
                         .foregroundColor(.blue)
                     }
                     if diagLog.entries.isEmpty {
-                        Text("No logs yet. Run "Set as Location" once and come back.")
+                        Text("No logs yet. Run \"Set as Location\" once and come back.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     } else {

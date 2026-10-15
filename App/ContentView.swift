@@ -47,7 +47,7 @@ struct ContentView: View {
             let manager = managers?.first ?? NETunnelProviderManager()
 
             let proto = NETunnelProviderProtocol()
-            proto.providerBundleIdentifier = "dev.duti.location-spoofer.tunnel"
+            proto.providerBundleIdentifier = "com.clendon.location-spoofer.tunnel"
             proto.serverAddress = "127.0.0.1"
             manager.protocolConfiguration = proto
             manager.localizedDescription = "Location Spoofer"
